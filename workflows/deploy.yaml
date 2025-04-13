@@ -33,4 +33,4 @@ jobs:
             --entry-point=hello_http \
             --trigger-http \
             --allow-unauthenticated \
-            --service-account=cloud-build-sullstice@${{ secrets.GCP_PROJECT }}.iam.gserviceaccount.com
+            --service-account=cloud-build@${{ secrets.GCP_PROJECT }}.iam.gserviceaccount.com
