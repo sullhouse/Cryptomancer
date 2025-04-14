@@ -4,3 +4,4 @@ google-cloud-bigquery
 Flask
 flask-cors
 requests
+pytz  # For timezone handling
