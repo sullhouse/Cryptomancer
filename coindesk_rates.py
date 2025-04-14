@@ -2,6 +2,7 @@ import requests
 import csv
 from datetime import datetime, timezone
 from google.cloud import bigquery
+from discord_messenger import send_ingestion_log, send_error_log
 import json
 
 def fetch_historical_exchange_rates(
@@ -72,12 +73,15 @@ def fetch_historical_exchange_rates(
         return all_rates
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data from Coindesk API: {e}")
+        error_message = f"Error fetching data from Coindesk API: {e}"
+        print(error_message)
+        send_error_log("fetch_historical_exchange_rates", error_message)
         return []
     except Exception as e:
-        print(f"An error occurred: {e}")
+        error_message = f"An unexpected error occurred: {e}"
+        print(error_message)
+        send_error_log("fetch_historical_exchange_rates", error_message)
         return []
-
 
 def save_rates_to_csv(rates, output_file):
     """
@@ -90,52 +94,56 @@ def save_rates_to_csv(rates, output_file):
     Returns:
         None
     """
-    with open(output_file, mode="w", newline="") as csv_file:
-        writer = csv.writer(csv_file)
+    try:
+        with open(output_file, mode="w", newline="") as csv_file:
+            writer = csv.writer(csv_file)
 
-        # Write the header row
-        header = [
-            "UNIT", "TIMESTAMP", "TYPE", "MARKET", "INSTRUMENT", "OPEN", "HIGH", "LOW", "CLOSE",
-            "FIRST_MESSAGE_TIMESTAMP", "LAST_MESSAGE_TIMESTAMP", "FIRST_MESSAGE_VALUE",
-            "HIGH_MESSAGE_VALUE", "HIGH_MESSAGE_TIMESTAMP", "LOW_MESSAGE_VALUE",
-            "LOW_MESSAGE_TIMESTAMP", "LAST_MESSAGE_VALUE", "TOTAL_INDEX_UPDATES", "VOLUME",
-            "QUOTE_VOLUME", "VOLUME_TOP_TIER", "QUOTE_VOLUME_TOP_TIER", "VOLUME_DIRECT",
-            "QUOTE_VOLUME_DIRECT", "VOLUME_TOP_TIER_DIRECT", "QUOTE_VOLUME_TOP_TIER_DIRECT"
-        ]
-        writer.writerow(header)
+            # Write the header row
+            header = [
+                "UNIT", "TIMESTAMP", "TYPE", "MARKET", "INSTRUMENT", "OPEN", "HIGH", "LOW", "CLOSE",
+                "FIRST_MESSAGE_TIMESTAMP", "LAST_MESSAGE_TIMESTAMP", "FIRST_MESSAGE_VALUE",
+                "HIGH_MESSAGE_VALUE", "HIGH_MESSAGE_TIMESTAMP", "LOW_MESSAGE_VALUE",
+                "LOW_MESSAGE_TIMESTAMP", "LAST_MESSAGE_VALUE", "TOTAL_INDEX_UPDATES", "VOLUME",
+                "QUOTE_VOLUME", "VOLUME_TOP_TIER", "QUOTE_VOLUME_TOP_TIER", "VOLUME_DIRECT",
+                "QUOTE_VOLUME_DIRECT", "VOLUME_TOP_TIER_DIRECT", "QUOTE_VOLUME_TOP_TIER_DIRECT"
+            ]
+            writer.writerow(header)
 
-        # Write each entry to the CSV
-        for entry in rates:
-            writer.writerow([
-                entry.get("UNIT", ""),
-                datetime.utcfromtimestamp(entry.get("TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("TIMESTAMP") else "",
-                entry.get("TYPE", ""),
-                entry.get("MARKET", ""),
-                entry.get("INSTRUMENT", ""),
-                entry.get("OPEN", ""),
-                entry.get("HIGH", ""),
-                entry.get("LOW", ""),
-                entry.get("CLOSE", ""),
-                datetime.utcfromtimestamp(entry.get("FIRST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("FIRST_MESSAGE_TIMESTAMP") else "",
-                datetime.utcfromtimestamp(entry.get("LAST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LAST_MESSAGE_TIMESTAMP") else "",
-                entry.get("FIRST_MESSAGE_VALUE", ""),
-                entry.get("HIGH_MESSAGE_VALUE", ""),
-                datetime.utcfromtimestamp(entry.get("HIGH_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("HIGH_MESSAGE_TIMESTAMP") else "",
-                entry.get("LOW_MESSAGE_VALUE", ""),
-                datetime.utcfromtimestamp(entry.get("LOW_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LOW_MESSAGE_TIMESTAMP") else "",
-                entry.get("LAST_MESSAGE_VALUE", ""),
-                entry.get("TOTAL_INDEX_UPDATES", ""),
-                entry.get("VOLUME", ""),
-                entry.get("QUOTE_VOLUME", ""),
-                entry.get("VOLUME_TOP_TIER", ""),
-                entry.get("QUOTE_VOLUME_TOP_TIER", ""),
-                entry.get("VOLUME_DIRECT", ""),
-                entry.get("QUOTE_VOLUME_DIRECT", ""),
-                entry.get("VOLUME_TOP_TIER_DIRECT", ""),
-                entry.get("QUOTE_VOLUME_TOP_TIER_DIRECT", "")
-            ])
-    print(f"Historical exchange rates successfully saved to {output_file}")
-
+            # Write each entry to the CSV
+            for entry in rates:
+                writer.writerow([
+                    entry.get("UNIT", ""),
+                    datetime.utcfromtimestamp(entry.get("TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("TIMESTAMP") else "",
+                    entry.get("TYPE", ""),
+                    entry.get("MARKET", ""),
+                    entry.get("INSTRUMENT", ""),
+                    entry.get("OPEN", ""),
+                    entry.get("HIGH", ""),
+                    entry.get("LOW", ""),
+                    entry.get("CLOSE", ""),
+                    datetime.utcfromtimestamp(entry.get("FIRST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("FIRST_MESSAGE_TIMESTAMP") else "",
+                    datetime.utcfromtimestamp(entry.get("LAST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LAST_MESSAGE_TIMESTAMP") else "",
+                    entry.get("FIRST_MESSAGE_VALUE", ""),
+                    entry.get("HIGH_MESSAGE_VALUE", ""),
+                    datetime.utcfromtimestamp(entry.get("HIGH_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("HIGH_MESSAGE_TIMESTAMP") else "",
+                    entry.get("LOW_MESSAGE_VALUE", ""),
+                    datetime.utcfromtimestamp(entry.get("LOW_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LOW_MESSAGE_TIMESTAMP") else "",
+                    entry.get("LAST_MESSAGE_VALUE", ""),
+                    entry.get("TOTAL_INDEX_UPDATES", ""),
+                    entry.get("VOLUME", ""),
+                    entry.get("QUOTE_VOLUME", ""),
+                    entry.get("VOLUME_TOP_TIER", ""),
+                    entry.get("QUOTE_VOLUME_TOP_TIER", ""),
+                    entry.get("VOLUME_DIRECT", ""),
+                    entry.get("QUOTE_VOLUME_DIRECT", ""),
+                    entry.get("VOLUME_TOP_TIER_DIRECT", ""),
+                    entry.get("QUOTE_VOLUME_TOP_TIER_DIRECT", "")
+                ])
+        print(f"Historical exchange rates successfully saved to {output_file}")
+    except Exception as e:
+        error_message = f"Error saving rates to CSV: {e}"
+        print(error_message)
+        send_error_log("save_rates_to_csv", error_message)
 
 def save_rates_to_bigquery(rates, project_id, dataset_id, table_id):
     """
@@ -150,114 +158,118 @@ def save_rates_to_bigquery(rates, project_id, dataset_id, table_id):
     Returns:
         None
     """
-    client = bigquery.Client(project=project_id)
-    table_ref = f"{project_id}.{dataset_id}.{table_id}"
+    try:
+        client = bigquery.Client(project=project_id)
+        table_ref = f"{project_id}.{dataset_id}.{table_id}"
 
-    # Define the schema explicitly to match the target table
-    schema = [
-        bigquery.SchemaField("UNIT", "STRING"),
-        bigquery.SchemaField("TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("TYPE", "INTEGER"),
-        bigquery.SchemaField("MARKET", "STRING"),
-        bigquery.SchemaField("INSTRUMENT", "STRING"),
-        bigquery.SchemaField("OPEN", "FLOAT"),
-        bigquery.SchemaField("HIGH", "FLOAT"),
-        bigquery.SchemaField("LOW", "FLOAT"),
-        bigquery.SchemaField("CLOSE", "FLOAT"),
-        bigquery.SchemaField("FIRST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LAST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("FIRST_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("HIGH_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("HIGH_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LOW_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("LOW_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LAST_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("TOTAL_INDEX_UPDATES", "INTEGER"),
-        bigquery.SchemaField("VOLUME", "FLOAT"),
-        bigquery.SchemaField("QUOTE_VOLUME", "FLOAT"),
-        bigquery.SchemaField("VOLUME_TOP_TIER", "FLOAT"),
-        bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER", "FLOAT"),
-        bigquery.SchemaField("VOLUME_DIRECT", "INTEGER"),
-        bigquery.SchemaField("QUOTE_VOLUME_DIRECT", "INTEGER"),
-        bigquery.SchemaField("VOLUME_TOP_TIER_DIRECT", "INTEGER"),
-        bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER_DIRECT", "INTEGER"),
-        bigquery.SchemaField("PCT_CHANGE", "FLOAT"),
-        bigquery.SchemaField("VOLATILITY", "FLOAT"),
-        bigquery.SchemaField("SPREAD_CLOSE_OPEN", "FLOAT"),
-        bigquery.SchemaField("VOLUME_RATIO", "FLOAT"),
-        bigquery.SchemaField("VOLUME_TOP_TIER_RATIO", "FLOAT"),
-    ]
+        # Define the schema explicitly to match the target table
+        schema = [
+            bigquery.SchemaField("UNIT", "STRING"),
+            bigquery.SchemaField("TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("TYPE", "INTEGER"),
+            bigquery.SchemaField("MARKET", "STRING"),
+            bigquery.SchemaField("INSTRUMENT", "STRING"),
+            bigquery.SchemaField("OPEN", "FLOAT"),
+            bigquery.SchemaField("HIGH", "FLOAT"),
+            bigquery.SchemaField("LOW", "FLOAT"),
+            bigquery.SchemaField("CLOSE", "FLOAT"),
+            bigquery.SchemaField("FIRST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LAST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("FIRST_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("HIGH_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("HIGH_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LOW_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("LOW_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LAST_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("TOTAL_INDEX_UPDATES", "INTEGER"),
+            bigquery.SchemaField("VOLUME", "FLOAT"),
+            bigquery.SchemaField("QUOTE_VOLUME", "FLOAT"),
+            bigquery.SchemaField("VOLUME_TOP_TIER", "FLOAT"),
+            bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER", "FLOAT"),
+            bigquery.SchemaField("VOLUME_DIRECT", "INTEGER"),
+            bigquery.SchemaField("QUOTE_VOLUME_DIRECT", "INTEGER"),
+            bigquery.SchemaField("VOLUME_TOP_TIER_DIRECT", "INTEGER"),
+            bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER_DIRECT", "INTEGER"),
+            bigquery.SchemaField("PCT_CHANGE", "FLOAT"),
+            bigquery.SchemaField("VOLATILITY", "FLOAT"),
+            bigquery.SchemaField("SPREAD_CLOSE_OPEN", "FLOAT"),
+            bigquery.SchemaField("VOLUME_RATIO", "FLOAT"),
+            bigquery.SchemaField("VOLUME_TOP_TIER_RATIO", "FLOAT"),
+        ]
 
-    # Convert rates to BigQuery-compatible rows
-    rows_to_insert = []
-    for entry in rates:
-        open_price = entry.get("OPEN", 0) or 0
-        close_price = entry.get("CLOSE", 0) or 0
-        high_price = entry.get("HIGH", 0) or 0
-        low_price = entry.get("LOW", 0) or 0
-        quote_volume = entry.get("QUOTE_VOLUME", 0) or 0
-        volume = entry.get("VOLUME", 0) or 0
-        quote_volume_top = entry.get("QUOTE_VOLUME_TOP_TIER", 0) or 0
-        volume_top = entry.get("VOLUME_TOP_TIER", 0) or 0
-        rows_to_insert.append({
-            "UNIT": str(entry.get("UNIT", "")),
-            "TIMESTAMP": datetime.utcfromtimestamp(entry.get("TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("TIMESTAMP") else None,
-            "TYPE": entry.get("TYPE", ""),
-            "MARKET": entry.get("MARKET", ""),
-            "INSTRUMENT": entry.get("INSTRUMENT", ""),
-            "OPEN": entry.get("OPEN", ""),
-            "HIGH": entry.get("HIGH", ""),
-            "LOW": entry.get("LOW", ""),
-            "CLOSE": entry.get("CLOSE", ""),
-            "FIRST_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("FIRST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("FIRST_MESSAGE_TIMESTAMP") else None,
-            "LAST_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("LAST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LAST_MESSAGE_TIMESTAMP") else None,
-            "FIRST_MESSAGE_VALUE": entry.get("FIRST_MESSAGE_VALUE", ""),
-            "HIGH_MESSAGE_VALUE": entry.get("HIGH_MESSAGE_VALUE", ""),
-            "HIGH_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("HIGH_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("HIGH_MESSAGE_TIMESTAMP") else None,
-            "LOW_MESSAGE_VALUE": entry.get("LOW_MESSAGE_VALUE", ""),
-            "LOW_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("LOW_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LOW_MESSAGE_TIMESTAMP") else None,
-            "LAST_MESSAGE_VALUE": entry.get("LAST_MESSAGE_VALUE", ""),
-            "TOTAL_INDEX_UPDATES": entry.get("TOTAL_INDEX_UPDATES", 0),
-            "VOLUME": entry.get("VOLUME", ""),
-            "QUOTE_VOLUME": entry.get("QUOTE_VOLUME", ""),
-            "VOLUME_TOP_TIER": entry.get("VOLUME_TOP_TIER", ""),
-            "QUOTE_VOLUME_TOP_TIER": entry.get("QUOTE_VOLUME_TOP_TIER", ""),
-            "VOLUME_DIRECT": entry.get("VOLUME_DIRECT", ""),
-            "QUOTE_VOLUME_DIRECT": entry.get("QUOTE_VOLUME_DIRECT", ""),
-            "VOLUME_TOP_TIER_DIRECT": entry.get("VOLUME_TOP_TIER_DIRECT", ""),
-            "QUOTE_VOLUME_TOP_TIER_DIRECT": entry.get("QUOTE_VOLUME_TOP_TIER_DIRECT", ""),
-            "PCT_CHANGE": (close_price - open_price) / open_price if open_price else None,
-            "VOLATILITY": high_price - low_price,
-            "SPREAD_CLOSE_OPEN": close_price - open_price,
-            "VOLUME_RATIO": quote_volume / volume if volume else None,
-            "VOLUME_TOP_TIER_RATIO": quote_volume_top / volume_top if volume_top else None
-        })
+        # Convert rates to BigQuery-compatible rows
+        rows_to_insert = []
+        for entry in rates:
+            open_price = entry.get("OPEN", 0) or 0
+            close_price = entry.get("CLOSE", 0) or 0
+            high_price = entry.get("HIGH", 0) or 0
+            low_price = entry.get("LOW", 0) or 0
+            quote_volume = entry.get("QUOTE_VOLUME", 0) or 0
+            volume = entry.get("VOLUME", 0) or 0
+            quote_volume_top = entry.get("QUOTE_VOLUME_TOP_TIER", 0) or 0
+            volume_top = entry.get("VOLUME_TOP_TIER", 0) or 0
+            rows_to_insert.append({
+                "UNIT": str(entry.get("UNIT", "")),
+                "TIMESTAMP": datetime.utcfromtimestamp(entry.get("TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("TIMESTAMP") else None,
+                "TYPE": entry.get("TYPE", ""),
+                "MARKET": entry.get("MARKET", ""),
+                "INSTRUMENT": entry.get("INSTRUMENT", ""),
+                "OPEN": entry.get("OPEN", ""),
+                "HIGH": entry.get("HIGH", ""),
+                "LOW": entry.get("LOW", ""),
+                "CLOSE": entry.get("CLOSE", ""),
+                "FIRST_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("FIRST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("FIRST_MESSAGE_TIMESTAMP") else None,
+                "LAST_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("LAST_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LAST_MESSAGE_TIMESTAMP") else None,
+                "FIRST_MESSAGE_VALUE": entry.get("FIRST_MESSAGE_VALUE", ""),
+                "HIGH_MESSAGE_VALUE": entry.get("HIGH_MESSAGE_VALUE", ""),
+                "HIGH_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("HIGH_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("HIGH_MESSAGE_TIMESTAMP") else None,
+                "LOW_MESSAGE_VALUE": entry.get("LOW_MESSAGE_VALUE", ""),
+                "LOW_MESSAGE_TIMESTAMP": datetime.utcfromtimestamp(entry.get("LOW_MESSAGE_TIMESTAMP", 0)).strftime("%Y-%m-%d %H:%M:%S UTC") if entry.get("LOW_MESSAGE_TIMESTAMP") else None,
+                "LAST_MESSAGE_VALUE": entry.get("LAST_MESSAGE_VALUE", ""),
+                "TOTAL_INDEX_UPDATES": entry.get("TOTAL_INDEX_UPDATES", 0),
+                "VOLUME": entry.get("VOLUME", ""),
+                "QUOTE_VOLUME": entry.get("QUOTE_VOLUME", ""),
+                "VOLUME_TOP_TIER": entry.get("VOLUME_TOP_TIER", ""),
+                "QUOTE_VOLUME_TOP_TIER": entry.get("QUOTE_VOLUME_TOP_TIER", ""),
+                "VOLUME_DIRECT": entry.get("VOLUME_DIRECT", ""),
+                "QUOTE_VOLUME_DIRECT": entry.get("QUOTE_VOLUME_DIRECT", ""),
+                "VOLUME_TOP_TIER_DIRECT": entry.get("VOLUME_TOP_TIER_DIRECT", ""),
+                "QUOTE_VOLUME_TOP_TIER_DIRECT": entry.get("QUOTE_VOLUME_TOP_TIER_DIRECT", ""),
+                "PCT_CHANGE": (close_price - open_price) / open_price if open_price else None,
+                "VOLATILITY": high_price - low_price,
+                "SPREAD_CLOSE_OPEN": close_price - open_price,
+                "VOLUME_RATIO": quote_volume / volume if volume else None,
+                "VOLUME_TOP_TIER_RATIO": quote_volume_top / volume_top if volume_top else None
+            })
 
-    # Load the data into a temporary table with the explicit schema
-    temp_table_id = f"{dataset_id}.temp_{table_id}"
-    job_config = bigquery.LoadJobConfig(
-        schema=schema,
-        write_disposition="WRITE_TRUNCATE"
-    )
-    job = client.load_table_from_json(rows_to_insert, temp_table_id, job_config=job_config)
-    job.result()  # Wait for the load job to complete
+        # Load the data into a temporary table with the explicit schema
+        temp_table_id = f"{dataset_id}.temp_{table_id}"
+        job_config = bigquery.LoadJobConfig(
+            schema=schema,
+            write_disposition="WRITE_TRUNCATE"
+        )
+        job = client.load_table_from_json(rows_to_insert, temp_table_id, job_config=job_config)
+        job.result()  # Wait for the load job to complete
 
-    # Use a MERGE statement to insert only new rows
-    merge_query = f"""
-        MERGE `{table_ref}` T
-        USING `{temp_table_id}` S
-        ON T.TIMESTAMP = S.TIMESTAMP
-        WHEN NOT MATCHED THEN
-          INSERT ROW
-    """
-    query_job = client.query(merge_query)
-    query_job.result()  # Wait for the query to complete
+        # Use a MERGE statement to insert only new rows
+        merge_query = f"""
+            MERGE `{table_ref}` T
+            USING `{temp_table_id}` S
+            ON T.TIMESTAMP = S.TIMESTAMP
+            WHEN NOT MATCHED THEN
+              INSERT ROW
+        """
+        query_job = client.query(merge_query)
+        query_job.result()  # Wait for the query to complete
 
-    # Clean up the temporary table
-    client.delete_table(temp_table_id, not_found_ok=True)
+        # Clean up the temporary table
+        client.delete_table(temp_table_id, not_found_ok=True)
 
-    print(f"Historical exchange rates successfully saved to BigQuery table {dataset_id}.{table_id}")
-
+        print(f"Historical exchange rates successfully saved to BigQuery table {dataset_id}.{table_id}")
+    except Exception as e:
+        error_message = f"Error saving rates to BigQuery: {e}"
+        print(error_message)
+        send_error_log("save_rates_to_bigquery", error_message)
 
 def update_bigquery_table(project_id, dataset_id, instrument, market, aggregate, fill, apply_mapping, response_format, api_key):
     """
@@ -277,110 +289,115 @@ def update_bigquery_table(project_id, dataset_id, instrument, market, aggregate,
     Returns:
         None
     """
-    client = bigquery.Client(project=project_id)
-    table_id = f"{project_id}.{dataset_id}.{instrument.lower()}"  # BigQuery table name
-
-    # Define the schema explicitly to match the target table
-    schema = [
-        bigquery.SchemaField("UNIT", "STRING"),
-        bigquery.SchemaField("TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("TYPE", "INTEGER"),
-        bigquery.SchemaField("MARKET", "STRING"),
-        bigquery.SchemaField("INSTRUMENT", "STRING"),
-        bigquery.SchemaField("OPEN", "FLOAT"),
-        bigquery.SchemaField("HIGH", "FLOAT"),
-        bigquery.SchemaField("LOW", "FLOAT"),
-        bigquery.SchemaField("CLOSE", "FLOAT"),
-        bigquery.SchemaField("FIRST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LAST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("FIRST_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("HIGH_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("HIGH_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LOW_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("LOW_MESSAGE_TIMESTAMP", "TIMESTAMP"),
-        bigquery.SchemaField("LAST_MESSAGE_VALUE", "FLOAT"),
-        bigquery.SchemaField("TOTAL_INDEX_UPDATES", "INTEGER"),
-        bigquery.SchemaField("VOLUME", "FLOAT"),
-        bigquery.SchemaField("QUOTE_VOLUME", "FLOAT"),
-        bigquery.SchemaField("VOLUME_TOP_TIER", "FLOAT"),
-        bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER", "FLOAT"),
-        bigquery.SchemaField("VOLUME_DIRECT", "INTEGER"),
-        bigquery.SchemaField("QUOTE_VOLUME_DIRECT", "INTEGER"),
-        bigquery.SchemaField("VOLUME_TOP_TIER_DIRECT", "INTEGER"),
-        bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER_DIRECT", "INTEGER"),
-        bigquery.SchemaField("PCT_CHANGE", "FLOAT"),
-        bigquery.SchemaField("VOLATILITY", "FLOAT"),
-        bigquery.SchemaField("SPREAD_CLOSE_OPEN", "FLOAT"),
-        bigquery.SchemaField("VOLUME_RATIO", "FLOAT"),
-        bigquery.SchemaField("VOLUME_TOP_TIER_RATIO", "FLOAT"),
-    ]
-
-    # Check if the table exists
     try:
-        client.get_table(table_id)
-        print(f"Table {table_id} exists.")
-    except Exception:
-        # If the table doesn't exist, create it
-        print(f"Table {table_id} does not exist. Creating it...")
-        table = bigquery.Table(table_id, schema=schema)
-        client.create_table(table)
-        print(f"Table {table_id} created successfully.")
+        client = bigquery.Client(project=project_id)
+        table_id = f"{project_id}.{dataset_id}.{instrument.lower()}"  # BigQuery table name
 
-    # Query the BigQuery table to find the most recent TIMESTAMP
-    query = f"""
-        SELECT MAX(TIMESTAMP) AS latest_timestamp
-        FROM `{table_id}`
-    """
-    query_job = client.query(query)
-    result = query_job.result()
-    latest_timestamp_row = next(result, None)
+        # Define the schema explicitly to match the target table
+        schema = [
+            bigquery.SchemaField("UNIT", "STRING"),
+            bigquery.SchemaField("TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("TYPE", "INTEGER"),
+            bigquery.SchemaField("MARKET", "STRING"),
+            bigquery.SchemaField("INSTRUMENT", "STRING"),
+            bigquery.SchemaField("OPEN", "FLOAT"),
+            bigquery.SchemaField("HIGH", "FLOAT"),
+            bigquery.SchemaField("LOW", "FLOAT"),
+            bigquery.SchemaField("CLOSE", "FLOAT"),
+            bigquery.SchemaField("FIRST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LAST_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("FIRST_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("HIGH_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("HIGH_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LOW_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("LOW_MESSAGE_TIMESTAMP", "TIMESTAMP"),
+            bigquery.SchemaField("LAST_MESSAGE_VALUE", "FLOAT"),
+            bigquery.SchemaField("TOTAL_INDEX_UPDATES", "INTEGER"),
+            bigquery.SchemaField("VOLUME", "FLOAT"),
+            bigquery.SchemaField("QUOTE_VOLUME", "FLOAT"),
+            bigquery.SchemaField("VOLUME_TOP_TIER", "FLOAT"),
+            bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER", "FLOAT"),
+            bigquery.SchemaField("VOLUME_DIRECT", "INTEGER"),
+            bigquery.SchemaField("QUOTE_VOLUME_DIRECT", "INTEGER"),
+            bigquery.SchemaField("VOLUME_TOP_TIER_DIRECT", "INTEGER"),
+            bigquery.SchemaField("QUOTE_VOLUME_TOP_TIER_DIRECT", "INTEGER"),
+            bigquery.SchemaField("PCT_CHANGE", "FLOAT"),
+            bigquery.SchemaField("VOLATILITY", "FLOAT"),
+            bigquery.SchemaField("SPREAD_CLOSE_OPEN", "FLOAT"),
+            bigquery.SchemaField("VOLUME_RATIO", "FLOAT"),
+            bigquery.SchemaField("VOLUME_TOP_TIER_RATIO", "FLOAT"),
+        ]
 
-    # Determine the most recent timestamp in the table
-    if latest_timestamp_row and latest_timestamp_row["latest_timestamp"]:
-        latest_timestamp = latest_timestamp_row["latest_timestamp"]
-    else:
-        # If the table is empty, start from the beginning of the year
+        # Check if the table exists
+        try:
+            client.get_table(table_id)
+            print(f"Table {table_id} exists.")
+        except Exception:
+            # If the table doesn't exist, create it
+            print(f"Table {table_id} does not exist. Creating it...")
+            table = bigquery.Table(table_id, schema=schema)
+            client.create_table(table)
+            print(f"Table {table_id} created successfully.")
+
+        # Query the BigQuery table to find the most recent TIMESTAMP
+        query = f"""
+            SELECT MAX(TIMESTAMP) AS latest_timestamp
+            FROM `{table_id}`
+        """
+        query_job = client.query(query)
+        result = query_job.result()
+        latest_timestamp_row = next(result, None)
+
+        # Determine the most recent timestamp in the table
+        if latest_timestamp_row and latest_timestamp_row["latest_timestamp"]:
+            latest_timestamp = latest_timestamp_row["latest_timestamp"]
+        else:
+            # If the table is empty, start from the beginning of the year
+            now = datetime.now(timezone.utc)
+            start_of_year = datetime(year=now.year, month=1, day=1, tzinfo=timezone.utc)
+            latest_timestamp = start_of_year
+
+        # Calculate the number of missing records (minutes) between the latest timestamp and now
         now = datetime.now(timezone.utc)
-        start_of_year = datetime(year=now.year, month=1, day=1, tzinfo=timezone.utc)
-        latest_timestamp = start_of_year
+        delta = now - latest_timestamp
+        limit = int(delta.total_seconds() // 60)  # Convert seconds to minutes
 
-    # Calculate the number of missing records (minutes) between the latest timestamp and now
-    now = datetime.now(timezone.utc)
-    delta = now - latest_timestamp
-    limit = int(delta.total_seconds() // 60)  # Convert seconds to minutes
+        if limit <= 0:
+            print("The table is already up-to-date.")
+            return
 
-    if limit <= 0:
-        print("The table is already up-to-date.")
-        return
+        print(f"Fetching {limit} missing records for {instrument}...")
 
-    print(f"Fetching {limit} missing records for {instrument}...")
+        # Fetch the missing records from the Coindesk API
+        rates = fetch_historical_exchange_rates(
+            market=market,
+            instrument=instrument,
+            limit=limit,
+            aggregate=aggregate,
+            fill=fill,
+            apply_mapping=apply_mapping,
+            response_format=response_format,
+            api_key=api_key
+        )
 
-    # Fetch the missing records from the Coindesk API
-    rates = fetch_historical_exchange_rates(
-        market=market,
-        instrument=instrument,
-        limit=limit,
-        aggregate=aggregate,
-        fill=fill,
-        apply_mapping=apply_mapping,
-        response_format=response_format,
-        api_key=api_key
-    )
+        if not rates:
+            print(f"No new data available for {instrument}.")
+            return
 
-    if not rates:
-        print(f"No new data available for {instrument}.")
-        return
+        # Insert the new records into the BigQuery table
+        save_rates_to_bigquery(
+            rates=rates,
+            project_id=project_id,
+            dataset_id=dataset_id,
+            table_id=instrument.lower()
+        )
 
-    # Insert the new records into the BigQuery table
-    save_rates_to_bigquery(
-        rates=rates,
-        project_id=project_id,
-        dataset_id=dataset_id,
-        table_id=instrument.lower()
-    )
-
-    print(f"Successfully updated BigQuery table {table_id} with {len(rates)} new records.")
-
+        print(f"Successfully updated BigQuery table {table_id} with {len(rates)} new records.")
+        send_ingestion_log(instrument=instrument, count=len(rates))
+    except Exception as e:
+        error_message = f"Error updating BigQuery table: {e}"
+        print(error_message)
+        send_error_log("update_bigquery_table", error_message)
 
 def batch_update_bigquery_tables(request):
     """
