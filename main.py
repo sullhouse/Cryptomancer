@@ -55,7 +55,12 @@ def hello_http(request):
 
     # Define a dictionary mapping function names to modules
     functions = {
-        "coindesk_batch_update_exchange_rates": "coindesk_rates.batch_update_bigquery_tables"
+        "coindesk_batch_update_exchange_rates": "coindesk_rates.batch_update_bigquery_tables",
+        "coindesk_backfill_update_exchange_rates": "coindesk_rates.batch_backfill_bigquery_tables",
+        "model_run_refresh_data": "model_run.refresh_data",
+        "model_run_update_features": "model_run.update_features",
+        "model_run_training": "model_run.run_training",
+        "model_run_simulation": "model_run.run_simulation"
     }
 
     # Log the request details to the GCS bucket as early as possible

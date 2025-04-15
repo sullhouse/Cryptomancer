@@ -3,3 +3,6 @@ test.py
 cryptomancer-456619-a2137711716f.json
 simulations
 *.pyc
+cache
+trade_log.csv
+trade_simulator.py

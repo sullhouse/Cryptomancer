@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from google.cloud import bigquery
 from discord_messenger import send_ingestion_log, send_error_log
 import json
+import time # Add time import for potential delays
 
 def fetch_historical_exchange_rates(
     market, instrument, limit, aggregate, fill, apply_mapping, response_format, api_key
@@ -81,6 +82,113 @@ def fetch_historical_exchange_rates(
         error_message = f"An unexpected error occurred: {e}"
         print(error_message)
         send_error_log("fetch_historical_exchange_rates", error_message)
+        return []
+
+def fetch_historical_range(
+    market, instrument, start_ts, end_ts, aggregate, fill, apply_mapping, response_format, api_key
+):
+    """
+    Fetch historical exchange rates from the Coindesk API for a specific date range.
+
+    Args:
+        market (str): The market to query.
+        instrument (str): The trading pair.
+        start_ts (int): Start timestamp (Unix seconds).
+        end_ts (int): End timestamp (Unix seconds).
+        aggregate (int): Aggregation interval (minutes).
+        fill (bool): Whether to fill missing data points.
+        apply_mapping (bool): Whether to apply mapping.
+        response_format (str): Response format.
+        api_key (str): Coindesk API key.
+
+    Returns:
+        list: A list of dictionaries containing the historical exchange rates within the range.
+    """
+    base_url = "https://data-api.coindesk.com/index/cc/v1/historical/minutes"
+    all_rates = []
+    current_ts = start_ts
+    max_limit_per_call = 2000 # Coindesk API limit per request
+
+    print(f"Starting fetch for {instrument} from {datetime.utcfromtimestamp(start_ts)} to {datetime.utcfromtimestamp(end_ts)}")
+
+    try:
+        while current_ts < end_ts:
+            # Calculate the end timestamp for this specific API call batch
+            # Fetch up to max_limit_per_call minutes ahead, but don't exceed the overall end_ts
+            batch_end_ts = min(current_ts + (max_limit_per_call * aggregate * 60) - (aggregate * 60), end_ts)
+
+            # Prepare the query parameters for fetching forward
+            params = {
+                "market": market,
+                "instrument": instrument,
+                "from_ts": current_ts,
+                "to_ts": batch_end_ts, # Fetch up to this timestamp
+                "limit": max_limit_per_call, # Request the max allowed
+                "aggregate": aggregate,
+                "fill": str(fill).lower(),
+                "apply_mapping": str(apply_mapping).lower(),
+                "response_format": response_format,
+                "api_key": api_key,
+            }
+
+            print(f"Fetching batch for {instrument}: {datetime.utcfromtimestamp(current_ts)} to {datetime.utcfromtimestamp(batch_end_ts)} (Limit: {max_limit_per_call})")
+
+            # Make the GET request
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+            rates = data.get("Data", [])
+
+            if not rates:
+                print(f"No more data received for {instrument} in this batch, or reached end_ts.")
+                # If no data, advance current_ts past batch_end_ts to avoid infinite loop if there's a gap
+                current_ts = batch_end_ts + (aggregate * 60)
+                # Optional: Add a small delay if hitting API limits frequently
+                # time.sleep(1)
+                continue # Continue to next potential batch
+
+            # Filter rates to ensure they are strictly within the requested overall range [start_ts, end_ts]
+            # and sort them by timestamp to process in order
+            rates_in_range = sorted(
+                [rate for rate in rates if start_ts <= rate.get("TIMESTAMP", 0) <= end_ts],
+                key=lambda x: x.get("TIMESTAMP", 0)
+            )
+
+            if not rates_in_range:
+                 print(f"No data within the desired range [{start_ts}, {end_ts}] in this batch for {instrument}.")
+                 # Advance past this batch even if results were outside the final range
+                 current_ts = batch_end_ts + (aggregate * 60)
+                 continue
+
+            all_rates.extend(rates_in_range)
+
+            # Update current_ts to the timestamp of the *last* record received in this batch + interval
+            # This prepares 'from_ts' for the next iteration
+            last_timestamp_in_batch = rates_in_range[-1].get("TIMESTAMP", 0)
+            current_ts = last_timestamp_in_batch + (aggregate * 60)
+
+            print(f"Fetched {len(rates_in_range)} records for {instrument}. Last timestamp: {datetime.utcfromtimestamp(last_timestamp_in_batch)}. Next fetch starts from: {datetime.utcfromtimestamp(current_ts)}")
+
+            # Optional: Add a small delay between API calls to respect rate limits
+            # time.sleep(0.5) # Adjust as needed
+
+        print(f"Finished fetching for {instrument}. Total records fetched: {len(all_rates)}")
+        # Remove potential duplicates just in case API overlap occurs (though pagination logic tries to avoid it)
+        unique_rates = list({rate['TIMESTAMP']: rate for rate in all_rates}.values())
+        unique_rates.sort(key=lambda x: x.get("TIMESTAMP", 0)) # Sort again after deduplication
+        print(f"Total unique records for {instrument}: {len(unique_rates)}")
+        return unique_rates
+
+    except requests.exceptions.RequestException as e:
+        error_message = f"Error fetching data range from Coindesk API for {instrument}: {e}"
+        print(error_message)
+        send_error_log("fetch_historical_range", error_message)
+        return [] # Return empty list on error, consider partial results if needed
+    except Exception as e:
+        error_message = f"An unexpected error occurred during range fetch for {instrument}: {e}"
+        print(error_message)
+        send_error_log("fetch_historical_range", error_message)
         return []
 
 def save_rates_to_csv(rates, output_file):
@@ -454,3 +562,150 @@ def batch_update_bigquery_tables(request):
 
     except Exception as e:
         return {"status": "error", "message": f"Failed to process request: {str(e)}"}
+
+def batch_backfill_bigquery_tables(request):
+    """
+    Batch backfill BigQuery tables for multiple token pairs for a specified date range,
+    based on a JSON configuration from a Flask request.
+
+    Expects JSON body like:
+    [
+      {
+        "project_id": "your-gcp-project",
+        "dataset_id": "your_dataset",
+        "instrument": "ETH-BTC",
+        "market": "cadli",
+        "aggregate": 1,
+        "fill": false,
+        "apply_mapping": false,
+        "response_format": "JSON",
+        "api_key": "YOUR_API_KEY",
+        "start_date": "2024-07-01", // Inclusive
+        "end_date": "2024-12-31"    // Inclusive
+      },
+      { ... other instruments ... }
+    ]
+
+    Args:
+        request (flask.Request): The Flask request object containing JSON data.
+
+    Returns:
+        dict: A response object containing the status and details of the backfill operations.
+    """
+    try:
+        instructions = request.get_json()
+
+        if not isinstance(instructions, list):
+            return {"status": "error", "message": "Invalid input format. Expected a JSON array."}
+
+        results = []
+
+        # Iterate through each instruction
+        for instruction in instructions:
+            instrument = instruction.get("instrument", "unknown")
+            try:
+                # --- Parameter Extraction and Validation ---
+                project_id = instruction["project_id"]
+                dataset_id = instruction["dataset_id"]
+                instrument = instruction["instrument"]
+                market = instruction["market"]
+                aggregate = instruction["aggregate"]
+                fill = instruction["fill"]
+                apply_mapping = instruction["apply_mapping"]
+                response_format = instruction["response_format"]
+                api_key = instruction["api_key"]
+                start_date_str = instruction["start_date"]
+                end_date_str = instruction["end_date"]
+
+                # --- Date Conversion ---
+                # Convert start_date string to UTC timestamp (beginning of the day)
+                start_dt = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                start_ts = int(start_dt.timestamp())
+
+                # Convert end_date string to UTC timestamp (end of the day)
+                end_dt = datetime.strptime(end_date_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+                end_ts = int(end_dt.timestamp())
+
+                if start_ts >= end_ts:
+                     raise ValueError("Start date must be before end date.")
+
+                print(f"\n--- Processing Backfill for: {instrument} ---")
+                print(f"Range: {start_date_str} to {end_date_str}")
+
+                # --- Fetch Data ---
+                rates = fetch_historical_range(
+                    market=market,
+                    instrument=instrument,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    aggregate=aggregate,
+                    fill=fill,
+                    apply_mapping=apply_mapping,
+                    response_format=response_format,
+                    api_key=api_key
+                )
+
+                if not rates:
+                    print(f"No data fetched for {instrument} in the specified range.")
+                    results.append({
+                        "instrument": instrument,
+                        "status": "skipped",
+                        "message": "No data fetched for the specified range."
+                    })
+                    continue # Move to the next instruction
+
+                # --- Save Data to BigQuery ---
+                # Ensure the target table exists (create if not) - reuse logic from update_bigquery_table maybe?
+                # For simplicity here, we assume save_rates_to_bigquery handles the MERGE correctly
+                # and the table structure is compatible or already exists.
+                # A more robust approach might explicitly check/create the table first.
+                table_id = instrument.lower() # Use lowercase instrument name as table ID convention
+                print(f"Saving {len(rates)} records for {instrument} to BigQuery table {dataset_id}.{table_id}...")
+                save_rates_to_bigquery(
+                    rates=rates,
+                    project_id=project_id,
+                    dataset_id=dataset_id,
+                    table_id=table_id
+                )
+
+                results.append({
+                    "instrument": instrument,
+                    "status": "success",
+                    "records_saved": len(rates),
+                    "message": f"Successfully backfilled table for {instrument}."
+                })
+                print(f"--- Finished Backfill for: {instrument} ---")
+
+            except KeyError as e:
+                results.append({
+                    "instrument": instrument,
+                    "status": "error",
+                    "message": f"Missing required key in instruction: {str(e)}"
+                })
+                send_error_log(f"batch_backfill_bigquery_tables ({instrument})", f"Missing key: {str(e)}")
+            except ValueError as e:
+                 results.append({
+                    "instrument": instrument,
+                    "status": "error",
+                    "message": f"Data validation error: {str(e)}"
+                })
+                 send_error_log(f"batch_backfill_bigquery_tables ({instrument})", f"Data validation error: {str(e)}")
+            except Exception as e:
+                error_message = f"An error occurred during backfill for {instrument}: {str(e)}"
+                results.append({
+                    "instrument": instrument,
+                    "status": "error",
+                    "message": error_message
+                })
+                send_error_log(f"batch_backfill_bigquery_tables ({instrument})", error_message)
+
+        return {"status": "completed", "results": results}
+
+    except Exception as e:
+        # Error parsing the overall request or other unexpected issue
+        error_message = f"Failed to process batch backfill request: {str(e)}"
+        print(error_message)
+        send_error_log("batch_backfill_bigquery_tables (Request Level)", error_message)
+        # Ensure Flask returns a JSON response even on top-level errors
+        import flask # Assuming Flask context, might need adjustment if run differently
+        return flask.jsonify({"status": "error", "message": error_message}), 500

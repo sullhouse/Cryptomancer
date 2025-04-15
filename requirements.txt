@@ -1,7 +1,29 @@
-functions-framework==3.*
-google-cloud-storage
+# Core ML & Data Handling
+pandas
+numpy
+xgboost
+scikit-learn
+joblib
+scipy
+
+# Technical Analysis
+pandas-ta
+
+# Plotting
+matplotlib
+
+# Google Cloud
 google-cloud-bigquery
+google-cloud-storage
+db-dtypes
+google-cloud-bigquery-storage
+
+# Utilities
+pytz # Often needed by pandas for timezones
+setuptools # Needed as a dependency for pandas-ta
+
+# Existing - Keep if used elsewhere in your project
+functions-framework==3.*
 Flask
 flask-cors
 requests
-pytz  # For timezone handling
