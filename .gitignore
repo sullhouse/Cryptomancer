@@ -5,4 +5,3 @@ simulations
 *.pyc
 cache
 trade_log.csv
-trade_simulator.py
