@@ -484,11 +484,15 @@ def run_llm_and_save_to_bigquery(request):
         if not csv_filename:
             return {"error": "csv_filename is required"}, 400
 
-        # --- Read the primer from GCS ---
+        # --- Read the primer and llm_content.json from GCS ---
         storage_client = storage.Client()
         bucket = storage_client.bucket("cryptomancer")
         primer_blob = bucket.blob("primers/llm_data_collection_and_prediction_primer.md")
         primer_text = primer_blob.download_as_text()
+
+        # Read llm_content.json example from the same folder
+        llm_content_blob = bucket.blob("primers/llm_content.json")
+        llm_content_example = llm_content_blob.download_as_text()
 
         # --- Read the CSV file from GCS ---
         # Look for the file in prediction_cache/data_exports/
@@ -498,6 +502,9 @@ def run_llm_and_save_to_bigquery(request):
         # --- Compose the prompt for OpenAI ---
         prompt = (
             f"{primer_text}\n\n"
+            f"--- LLM_CONTENT.JSON START ---\n"
+            f"{llm_content_example}\n"
+            f"--- LLM_CONTENT.JSON END ---\n\n"
             f"Below is the latest hourly crypto data (CSV):\n"
             f"```\n{csv_text}\n```\n"
             "Please analyze the data and return ONLY a JSON object following the exact format described above. Only use the data provided above. Do not mention any inability to access data. Return ONLY the JSON object as described."
