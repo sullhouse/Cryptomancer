@@ -22,8 +22,11 @@ google-cloud-bigquery-storage
 pytz # Often needed by pandas for timezones
 setuptools # Needed as a dependency for pandas-ta
 
-# Existing - Keep if used elsewhere in your project
+# Web & APIs
 functions-framework==3.*
 Flask
 flask-cors
 requests
+
+# OpenAI
+openai
