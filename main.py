@@ -68,7 +68,9 @@ def hello_http(request):
         "model_run_update_features": "model_run.update_features",
         "model_run_training": "model_run.run_training",
         "model_run_simulation": "model_run.run_simulation",
-        "fetch_and_save_minute_data_for_hour": "data_utils.api_fetch_and_save_minute_data_for_hour"
+        "fetch_and_save_minute_data_for_hour": "data_utils.api_fetch_and_save_minute_data_for_hour",
+        "run_llm_and_save_to_bigquery": "data_utils.run_llm_and_save_to_bigquery",
+        "calculate_actuals": "data_utils.api_calculate_actuals"
     }
 
     # Log the request details to the GCS bucket as early as possible

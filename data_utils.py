@@ -3,6 +3,7 @@ import numpy as np
 import os
 from google.cloud import bigquery
 from datetime import datetime # Import datetime
+import requests
 
 # --- Constants ---
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
@@ -155,17 +156,13 @@ def fetch_and_save_minute_data_for_hour(token_pairs, hour_timestamp, cache_folde
     merged_df.to_csv(out_path, index=False)
     print(f"Minute-level data saved to {out_path}")
 
+from cache_utils import write_csv
+import os
+
 def api_fetch_and_save_minute_data_for_hour(request):
     """
     API endpoint: Fetches minute-level data for the specified hour and token pairs,
-    merges them on timestamp, and saves as a CSV in the cache folder.
-
-    Expects a POST request with JSON:
-    {
-        "token_pairs": ["eth_usdc", "matic_usdc"],
-        "hour_timestamp": "2025-04-20 18:00:00",  # UTC hour start
-        "filename": "custom_filename.csv"         # Optional, defaults to {hour-timestamp}_minute_coindesk_data.csv
-    }
+    merges them on timestamp, and saves as a CSV in the cache folder or GCP bucket.
     """
     import os
     from datetime import timedelta
@@ -201,6 +198,7 @@ def api_fetch_and_save_minute_data_for_hour(request):
                 ORDER BY timestamp
             """
 
+            from google.cloud import bigquery
             client = bigquery.Client(project=PROJECT_ID)
             try:
                 df = client.query(query).to_dataframe()
@@ -231,24 +229,30 @@ def api_fetch_and_save_minute_data_for_hour(request):
             return {"error": "No data to save for the specified hour and pairs."}, 200
 
         merged_df['timestamp'] = pd.to_datetime(merged_df['timestamp'], utc=True)
-        # Ensure start_time and end_time are also timezone-aware
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=pd.Timestamp.utcnow().tzinfo or pd.Timestamp('UTC').tzinfo)
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=pd.Timestamp.utcnow().tzinfo or pd.Timestamp('UTC').tzinfo)
+        start_time = pd.to_datetime(start_time).tz_localize('UTC') if pd.to_datetime(start_time).tzinfo is None else pd.to_datetime(start_time)
+        end_time = pd.to_datetime(end_time).tz_localize('UTC') if pd.to_datetime(end_time).tzinfo is None else pd.to_datetime(end_time)
 
         merged_df = merged_df.sort_values('timestamp')
         merged_df = merged_df[(merged_df['timestamp'] >= start_time) & (merged_df['timestamp'] <= end_time)]
         merged_df = merged_df.reset_index(drop=True)
 
-        os.makedirs("cache", exist_ok=True)
+        # --- Determine environment and output path ---
+        RUNNING_LOCALLY = not os.environ.get('K_SERVICE', '')
+        cache_location = 'local' if RUNNING_LOCALLY else 'gcp'
+
+        # Set default filename if not provided
         if not filename:
             filename = f"{hour_dt.strftime('%Y-%m-%dT%H')}_minute_coindesk_data.csv"
-        out_path = os.path.join("cache", filename)
-        merged_df.to_csv(out_path, index=False)
-        print(f"Minute-level data saved to {out_path}")
 
-        return {"message": f"Minute-level data saved to {out_path}", "rows": len(merged_df)}, 200
+        # For GCP, prefix with data_exports/
+        if cache_location == 'gcp':
+            filename = f"data_exports/{filename}"
+
+        # Use cache_utils.write_csv to save
+        write_csv(merged_df, filename, cache_location)
+
+        print(f"Minute-level data saved to {filename} ({cache_location})")
+        return {"message": f"Minute-level data saved to {filename}", "rows": len(merged_df)}, 200
 
     except Exception as e:
         print(f"Error in api_fetch_and_save_minute_data_for_hour: {e}")
@@ -452,3 +456,321 @@ def build_dataset(target_pair, start_date, end_date, interval_hours=3): # Add ta
     final_df = build_features(merged_df, target_pair=target_pair)
 
     return final_df
+
+import openai
+from google.cloud import bigquery
+import json
+
+def run_llm_and_save_to_bigquery(request):
+    """
+    API endpoint: 
+    - Reads the LLM primer from GCS.
+    - Reads a CSV file from GCS (filename provided in JSON).
+    - Sends both as context to OpenAI, requesting a JSON response in a specific format.
+    - Saves the resulting JSON to BigQuery in the AI dataset, table 'llm_predictions'.
+    
+    Expects POST JSON:
+    {
+        "csv_filename": "data_exports/2025-04-20T18_minute_coindesk_data.csv"
+    }
+    """
+    import os
+    import re
+    from google.cloud import storage
+
+    try:
+        data = request.get_json()
+        csv_filename = data.get("csv_filename")
+        if not csv_filename:
+            return {"error": "csv_filename is required"}, 400
+
+        # --- Read the primer from GCS ---
+        storage_client = storage.Client()
+        bucket = storage_client.bucket("cryptomancer")
+        primer_blob = bucket.blob("primers/llm_data_collection_and_prediction_primer.md")
+        primer_text = primer_blob.download_as_text()
+
+        # --- Read the CSV file from GCS ---
+        csv_blob = bucket.blob(csv_filename)
+        csv_text = csv_blob.download_as_text()
+
+        # --- Compose the prompt for OpenAI ---
+        prompt = (
+            f"{primer_text}\n\n"
+            f"Below is the latest hourly crypto data (CSV):\n"
+            f"```\n{csv_text}\n```\n"
+            "Please analyze the data and return ONLY a JSON object following the exact format described above."
+        )
+
+        # --- Call OpenAI API (new style for openai>=1.0.0) ---
+        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4-1106-preview",
+            messages=[
+                {"role": "system", "content": "You are a crypto market analyst and data engineer."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2000
+        )
+        llm_content = response.choices[0].message.content
+
+        # --- Parse the JSON from the LLM response ---
+        try:
+            # Remove triple backticks and optional 'json' tag
+            cleaned = llm_content.strip()
+            # Remove ```json ... ```
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            llm_json = json.loads(cleaned)
+        except Exception as e:
+            return {"error": f"Failed to parse LLM JSON: {e}", "llm_content": llm_content}, 500
+        
+        # --- Save to BigQuery ---
+        bq_client = bigquery.Client(project="cryptomancer-456619")
+
+        # Save JSON to a temp file or upload as string
+        print(llm_json)
+        sentiment_table = "cryptomancer-456619.AI.sentiment"
+        ds = llm_json["data_summary"]
+        run_timestamp = llm_json.get("run_timestamp")
+
+        sentiment_row = {
+            "run_timestamp": run_timestamp,
+            "btc_google_trends_summary": ds["btc"].get("google_trends_summary"),
+            "btc_google_trends_sentiment": ds["btc"].get("google_trends_sentiment"),
+            "btc_social_media_summary": ds["btc"].get("social_media_summary"),
+            "btc_social_media_sentiment": ds["btc"].get("social_media_sentiment"),
+            "btc_news_summary": ds["btc"].get("news_summary"),
+            "btc_news_sentiment": ds["btc"].get("news_sentiment"),
+            "btc_indicators_summary": ds["btc"].get("indicators_summary"),
+            "btc_indicators_sentiment": ds["btc"].get("indicators_sentiment"),
+            "btc_minute_data_summary": ds["btc"].get("minute_data_summary"),
+            "btc_minute_data_sentiment": ds["btc"].get("minute_data_sentiment"),
+            "btc_overall_sentiment_score": ds["btc"].get("overall_sentiment_score"),
+            "eth_google_trends_summary": ds["eth"].get("google_trends_summary"),
+            "eth_google_trends_sentiment": ds["eth"].get("google_trends_sentiment"),
+            "eth_social_media_summary": ds["eth"].get("social_media_summary"),
+            "eth_social_media_sentiment": ds["eth"].get("social_media_sentiment"),
+            "eth_news_summary": ds["eth"].get("news_summary"),
+            "eth_news_sentiment": ds["eth"].get("news_sentiment"),
+            "eth_indicators_summary": ds["eth"].get("indicators_summary"),
+            "eth_indicators_sentiment": ds["eth"].get("indicators_sentiment"),
+            "eth_minute_data_summary": ds["eth"].get("minute_data_summary"),
+            "eth_minute_data_sentiment": ds["eth"].get("minute_data_sentiment"),
+            "eth_overall_sentiment_score": ds["eth"].get("overall_sentiment_score"),
+        }
+
+        sentiment_errors = bq_client.insert_rows_json(sentiment_table, [sentiment_row])
+        if sentiment_errors:
+            return {"error": f"BigQuery sentiment insert errors: {sentiment_errors}"}, 500
+        
+        # --- Insert predictions into AI.predictions table ---
+        predictions_table = "cryptomancer-456619.AI.predictions"
+        preds = llm_json["predictions"]
+        run_timestamp = llm_json.get("run_timestamp")
+
+        # Helper to map (token, timeframe) to field names
+        def pred_field(token, hours, field):
+            suffix = f"{hours}_hour" if hours == 1 else f"{hours}_hours"
+            return f"{token.lower()}_{suffix}_{field}"
+
+        # Build the row dictionary
+        pred_row = {"run_timestamp": run_timestamp}
+        for token in ["BTC", "ETH"]:
+            for hours in [1, 3, 6, 12, 24]:
+                # Find the prediction for this token and timeframe
+                pred = next((p for p in preds if p["token"] == token and p["timeframe_hours"] == hours), None)
+                if pred:
+                    pred_row[pred_field(token, hours, "direction")] = pred.get("prediction_direction")
+                    pred_row[pred_field(token, hours, "confidence")] = pred.get("prediction_confidence")
+                else:
+                    pred_row[pred_field(token, hours, "direction")] = None
+                    pred_row[pred_field(token, hours, "confidence")] = None
+
+        predictions_errors = bq_client.insert_rows_json(predictions_table, [pred_row])
+        if predictions_errors:
+            return {"error": f"BigQuery predictions insert errors: {predictions_errors}"}, 500
+
+        # --- Send Discord notification ---
+        send_discord_message(
+            f":white_check_mark: LLM predictions saved to BigQuery for {run_timestamp}"
+        )
+
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+    return {"status": "success"}, 200
+
+def send_discord_message(content, webhook_url=None):
+    """
+    Sends a message to Discord via webhook.
+    """
+    if webhook_url is None:
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("Discord webhook URL not set.")
+        return
+    try:
+        response = requests.post(webhook_url, json={"content": content})
+        if response.status_code != 204:
+            print(f"Discord webhook error: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Failed to send Discord message: {e}")
+
+from google.cloud import bigquery
+import pandas as pd
+
+def api_calculate_actuals(request):
+    """
+    API endpoint to calculate actual price changes and direction for BTC and ETH
+    over 1, 3, 6, 12, 24 hour timeframes, and store results in AI.actuals.
+    Expects POST JSON:
+    {
+        "run_timestamp": "2025-04-20T19:00:00Z"  # ISO8601 UTC
+    }
+    """
+    import os
+    import json
+
+    try:
+        data = request.get_json()
+        run_timestamp = data.get("run_timestamp")
+        if not run_timestamp:
+            return {"error": "run_timestamp is required"}, 400
+
+        project_id = "cryptomancer-456619"
+        dataset = "Coindesk"
+
+        results = []
+        bq_client = bigquery.Client(project=project_id)
+
+        query_base = f"""
+            -- Replace this with your target hour
+        DECLARE run_timestamp TIMESTAMP DEFAULT TIMESTAMP('{run_timestamp}');
+
+        WITH
+        btc AS (
+        SELECT
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 1 MINUTE, CLOSE, NULL)) AS close_0,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 61 MINUTE, CLOSE, NULL)) AS close_1h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 181 MINUTE, CLOSE, NULL)) AS close_3h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 361 MINUTE, CLOSE, NULL)) AS close_6h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 721 MINUTE, CLOSE, NULL)) AS close_12h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 1441 MINUTE, CLOSE, NULL)) AS close_24h
+        FROM `cryptomancer-456619.Coindesk.btc-usdc`
+        WHERE TIMESTAMP BETWEEN run_timestamp - INTERVAL 25 HOUR AND run_timestamp
+        ),
+        eth AS (
+        SELECT
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 1 MINUTE, CLOSE, NULL)) AS close_0,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 61 MINUTE, CLOSE, NULL)) AS close_1h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 181 MINUTE, CLOSE, NULL)) AS close_3h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 361 MINUTE, CLOSE, NULL)) AS close_6h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 721 MINUTE, CLOSE, NULL)) AS close_12h,
+            MAX(IF(TIMESTAMP = run_timestamp - INTERVAL 1441 MINUTE, CLOSE, NULL)) AS close_24h
+        FROM `cryptomancer-456619.Coindesk.eth-usdc`
+        WHERE TIMESTAMP BETWEEN run_timestamp - INTERVAL 25 HOUR AND run_timestamp
+        )
+        SELECT
+        run_timestamp,
+        -- BTC
+        CASE WHEN btc.close_1h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((btc.close_0 - btc.close_1h) / btc.close_1h) * 100 >= 0.25 THEN 1
+                        WHEN ((btc.close_0 - btc.close_1h) / btc.close_1h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS btc_1_hour_actual_direction,
+        CASE WHEN btc.close_1h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE ((btc.close_0 - btc.close_1h) / btc.close_1h) * 100 END AS btc_1_hour_pct_change,
+
+        CASE WHEN btc.close_3h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((btc.close_0 - btc.close_3h) / btc.close_3h) * 100 >= 0.25 THEN 1
+                        WHEN ((btc.close_0 - btc.close_3h) / btc.close_3h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS btc_3_hours_actual_direction,
+        CASE WHEN btc.close_3h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE ((btc.close_0 - btc.close_3h) / btc.close_3h) * 100 END AS btc_3_hours_pct_change,
+
+        CASE WHEN btc.close_6h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((btc.close_0 - btc.close_6h) / btc.close_6h) * 100 >= 0.25 THEN 1
+                        WHEN ((btc.close_0 - btc.close_6h) / btc.close_6h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS btc_6_hours_actual_direction,
+        CASE WHEN btc.close_6h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE ((btc.close_0 - btc.close_6h) / btc.close_6h) * 100 END AS btc_6_hours_pct_change,
+
+        CASE WHEN btc.close_12h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((btc.close_0 - btc.close_12h) / btc.close_12h) * 100 >= 0.25 THEN 1
+                        WHEN ((btc.close_0 - btc.close_12h) / btc.close_12h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS btc_12_hours_actual_direction,
+        CASE WHEN btc.close_12h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE ((btc.close_0 - btc.close_12h) / btc.close_12h) * 100 END AS btc_12_hours_pct_change,
+
+        CASE WHEN btc.close_24h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((btc.close_0 - btc.close_24h) / btc.close_24h) * 100 >= 0.25 THEN 1
+                        WHEN ((btc.close_0 - btc.close_24h) / btc.close_24h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS btc_24_hours_actual_direction,
+        CASE WHEN btc.close_24h IS NULL OR btc.close_0 IS NULL THEN NULL
+            ELSE ((btc.close_0 - btc.close_24h) / btc.close_24h) * 100 END AS btc_24_hours_pct_change,
+
+        -- ETH
+        CASE WHEN eth.close_1h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((eth.close_0 - eth.close_1h) / eth.close_1h) * 100 >= 0.25 THEN 1
+                        WHEN ((eth.close_0 - eth.close_1h) / eth.close_1h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS eth_1_hour_actual_direction,
+        CASE WHEN eth.close_1h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE ((eth.close_0 - eth.close_1h) / eth.close_1h) * 100 END AS eth_1_hour_pct_change,
+
+        CASE WHEN eth.close_3h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((eth.close_0 - eth.close_3h) / eth.close_3h) * 100 >= 0.25 THEN 1
+                        WHEN ((eth.close_0 - eth.close_3h) / eth.close_3h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS eth_3_hours_actual_direction,
+        CASE WHEN eth.close_3h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE ((eth.close_0 - eth.close_3h) / eth.close_3h) * 100 END AS eth_3_hours_pct_change,
+
+        CASE WHEN eth.close_6h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((eth.close_0 - eth.close_6h) / eth.close_6h) * 100 >= 0.25 THEN 1
+                        WHEN ((eth.close_0 - eth.close_6h) / eth.close_6h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS eth_6_hours_actual_direction,
+        CASE WHEN eth.close_6h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE ((eth.close_0 - eth.close_6h) / eth.close_6h) * 100 END AS eth_6_hours_pct_change,
+
+        CASE WHEN eth.close_12h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((eth.close_0 - eth.close_12h) / eth.close_12h) * 100 >= 0.25 THEN 1
+                        WHEN ((eth.close_0 - eth.close_12h) / eth.close_12h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS eth_12_hours_actual_direction,
+        CASE WHEN eth.close_12h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE ((eth.close_0 - eth.close_12h) / eth.close_12h) * 100 END AS eth_12_hours_pct_change,
+
+        CASE WHEN eth.close_24h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE CASE WHEN ((eth.close_0 - eth.close_24h) / eth.close_24h) * 100 >= 0.25 THEN 1
+                        WHEN ((eth.close_0 - eth.close_24h) / eth.close_24h) * 100 <= -0.25 THEN -1
+                        ELSE 0 END END AS eth_24_hours_actual_direction,
+        CASE WHEN eth.close_24h IS NULL OR eth.close_0 IS NULL THEN NULL
+            ELSE ((eth.close_0 - eth.close_24h) / eth.close_24h) * 100 END AS eth_24_hours_pct_change
+
+        FROM btc, eth;
+        """
+        # Execute the query
+        query_job = bq_client.query(query_base)
+        results = query_job.result().to_dataframe().to_dict(orient="records")
+        if not results:
+            return {"error": "No results found for the specified run_timestamp."}, 404
+        # Print the results of the query to the terminal
+        print("Query Results:")
+        for row in results:
+            print(row)
+        # Convert any pandas.Timestamp to string (ISO format) for BigQuery compatibility
+        for row in results:
+            if "run_timestamp" in row and hasattr(row["run_timestamp"], "isoformat"):
+                row["run_timestamp"] = row["run_timestamp"].isoformat()
+
+        # Insert results into BigQuery
+        actuals_table = f"{project_id}.AI.actuals"
+        errors = bq_client.insert_rows_json(actuals_table, results)
+        
+        if errors:
+            return {"error": f"BigQuery insert errors: {errors}"}, 500
+
+        return {"status": "success", "rows": results}, 200
+
+    except Exception as e:
+        return {"error": str(e)}, 500
