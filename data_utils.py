@@ -491,7 +491,8 @@ def run_llm_and_save_to_bigquery(request):
         primer_text = primer_blob.download_as_text()
 
         # --- Read the CSV file from GCS ---
-        csv_blob = bucket.blob(csv_filename)
+        # Look for the file in prediction_cache/data_exports/
+        csv_blob = bucket.blob(f"prediction_cache/{csv_filename}")
         csv_text = csv_blob.download_as_text()
 
         # --- Compose the prompt for OpenAI ---
