@@ -500,7 +500,7 @@ def run_llm_and_save_to_bigquery(request):
             f"{primer_text}\n\n"
             f"Below is the latest hourly crypto data (CSV):\n"
             f"```\n{csv_text}\n```\n"
-            "Please analyze the data and return ONLY a JSON object following the exact format described above."
+            "Please analyze the data and return ONLY a JSON object following the exact format described above. Only use the data provided above. Do not mention any inability to access data. Return ONLY the JSON object as described."
         )
 
         # --- Call OpenAI API (new style for openai>=1.0.0) ---
