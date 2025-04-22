@@ -519,7 +519,9 @@ def run_llm_and_save_to_bigquery(request):
             f"{llm_content_example}\n"
             f"--- LLM_CONTENT.JSON END ---\n\n"
             f"Below is the latest hourly crypto data (CSV):\n"
+            f"--- HOURLY CRYPTO DATA CSV START ---\n"
             f"```\n{csv_text}\n```\n"
+            f"--- HOURLY CRYPTO DATA CSV END ---\n\n"
             "Please analyze the data and return ONLY a JSON object following the exact format described above. Only use the data provided above. Do not mention any inability to access data. Return ONLY the JSON object as described."
         )
 
