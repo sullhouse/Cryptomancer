@@ -513,7 +513,7 @@ def run_llm_and_save_to_bigquery(request):
         # --- Call OpenAI API (new style for openai>=1.0.0) ---
         client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         response = client.chat.completions.create(
-            model="gpt-4-1106-preview",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a crypto market analyst and data engineer."},
                 {"role": "user", "content": prompt}
