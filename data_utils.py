@@ -466,40 +466,53 @@ def run_llm_and_save_to_bigquery(request):
     API endpoint: 
     - Reads the LLM primer from GCS.
     - Reads a CSV file from GCS (filename provided in JSON).
-    - Sends both as context to OpenAI, requesting a JSON response in a specific format.
+    - Sends both as context to OpenAI or Gemini, requesting a JSON response in a specific format.
     - Saves the resulting JSON to BigQuery in the AI dataset, table 'llm_predictions'.
-    
+    - Logs the run in AI.run_log.
+    - Notifies Discord on success or error.
+
     Expects POST JSON:
     {
-        "csv_filename": "data_exports/2025-04-20T18_minute_coindesk_data.csv"
+        "csv_filename": "data_exports/2025-04-20T18_minute_coindesk_data.csv",
+        "llm": "openai" or "gemini",           # optional, default "openai"
+        "model": "gpt-3.5-turbo" or "2.5",     # optional, default per llm
     }
     """
     import os
     import re
+    import json
     from google.cloud import storage
+    from datetime import datetime
 
     try:
         data = request.get_json()
         csv_filename = data.get("csv_filename")
+        llm = data.get("llm", "openai").lower()
+        model = data.get("model")
         if not csv_filename:
             return {"error": "csv_filename is required"}, 400
+
+        # Set defaults
+        if llm == "openai":
+            model = model or "gpt-3.5-turbo"
+        elif llm == "gemini":
+            model = model or "gemini-1.5-pro-latest"
+        else:
+            return {"error": f"Unsupported llm: {llm}"}, 400
 
         # --- Read the primer and llm_content.json from GCS ---
         storage_client = storage.Client()
         bucket = storage_client.bucket("cryptomancer")
         primer_blob = bucket.blob("primers/llm_data_collection_and_prediction_primer.md")
         primer_text = primer_blob.download_as_text()
-
-        # Read llm_content.json example from the same folder
         llm_content_blob = bucket.blob("primers/llm_content.json")
         llm_content_example = llm_content_blob.download_as_text()
 
         # --- Read the CSV file from GCS ---
-        # Look for the file in prediction_cache/data_exports/
         csv_blob = bucket.blob(f"prediction_cache/{csv_filename}")
         csv_text = csv_blob.download_as_text()
 
-        # --- Compose the prompt for OpenAI ---
+        # --- Compose the prompt for LLM ---
         prompt = (
             f"{primer_text}\n\n"
             f"--- LLM_CONTENT.JSON START ---\n"
@@ -510,106 +523,171 @@ def run_llm_and_save_to_bigquery(request):
             "Please analyze the data and return ONLY a JSON object following the exact format described above. Only use the data provided above. Do not mention any inability to access data. Return ONLY the JSON object as described."
         )
 
-        # --- Call OpenAI API (new style for openai>=1.0.0) ---
-        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a crypto market analyst and data engineer."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            max_tokens=2000
-        )
-        llm_content = response.choices[0].message.content
+        # --- Route to the correct LLM ---
+        llm_response_text = None
+        llm_status = "success"
+        llm_error = None
+
+        if llm == "openai":
+            import openai
+            client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are a crypto market analyst and data engineer."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2000
+                )
+                llm_response_text = response.choices[0].message.content
+            except Exception as e:
+                llm_status = "failure"
+                llm_error = f"OpenAI error: {e}"
+        elif llm == "gemini":
+            try:
+                import google.generativeai as genai
+
+                genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
+                model_obj = genai.GenerativeModel(model)
+                response = model_obj.generate_content(prompt)
+                llm_response_text = response.text
+
+            except Exception as e:
+                llm_status = "failure"
+                llm_error = f"Gemini error: {e}"
 
         # --- Parse the JSON from the LLM response ---
-        try:
-            # Remove triple backticks and optional 'json' tag
-            cleaned = llm_content.strip()
-            # Remove ```json ... ```
-            if cleaned.startswith("```"):
-                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-                cleaned = re.sub(r"\s*```$", "", cleaned)
-            llm_json = json.loads(cleaned)
-        except Exception as e:
-            return {"error": f"Failed to parse LLM JSON: {e}", "llm_content": llm_content}, 500
-        
+        llm_json = None
+        parse_error = None
+        if llm_status == "success":
+            try:
+                cleaned = llm_response_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\s*```$", "", cleaned)
+                llm_json = json.loads(cleaned)
+            except Exception as e:
+                llm_status = "failure"
+                parse_error = f"Failed to parse LLM JSON: {e}"
+                llm_error = parse_error
+
         # --- Save to BigQuery ---
         bq_client = bigquery.Client(project="cryptomancer-456619")
+        run_timestamp = None
+        sentiment_errors = None
+        predictions_errors = None
 
-        # Save JSON to a temp file or upload as string
-        print(llm_json)
-        sentiment_table = "cryptomancer-456619.AI.sentiment"
-        ds = llm_json["data_summary"]
-        run_timestamp = llm_json.get("run_timestamp")
+        if llm_status == "success" and llm_json:
+            try:
+                sentiment_table = "cryptomancer-456619.AI.sentiment"
+                ds = llm_json["data_summary"]
+                run_timestamp = llm_json.get("run_timestamp")
 
-        sentiment_row = {
-            "run_timestamp": run_timestamp,
-            "btc_google_trends_summary": ds["btc"].get("google_trends_summary"),
-            "btc_google_trends_sentiment": ds["btc"].get("google_trends_sentiment"),
-            "btc_social_media_summary": ds["btc"].get("social_media_summary"),
-            "btc_social_media_sentiment": ds["btc"].get("social_media_sentiment"),
-            "btc_news_summary": ds["btc"].get("news_summary"),
-            "btc_news_sentiment": ds["btc"].get("news_sentiment"),
-            "btc_indicators_summary": ds["btc"].get("indicators_summary"),
-            "btc_indicators_sentiment": ds["btc"].get("indicators_sentiment"),
-            "btc_minute_data_summary": ds["btc"].get("minute_data_summary"),
-            "btc_minute_data_sentiment": ds["btc"].get("minute_data_sentiment"),
-            "btc_overall_sentiment_score": ds["btc"].get("overall_sentiment_score"),
-            "eth_google_trends_summary": ds["eth"].get("google_trends_summary"),
-            "eth_google_trends_sentiment": ds["eth"].get("google_trends_sentiment"),
-            "eth_social_media_summary": ds["eth"].get("social_media_summary"),
-            "eth_social_media_sentiment": ds["eth"].get("social_media_sentiment"),
-            "eth_news_summary": ds["eth"].get("news_summary"),
-            "eth_news_sentiment": ds["eth"].get("news_sentiment"),
-            "eth_indicators_summary": ds["eth"].get("indicators_summary"),
-            "eth_indicators_sentiment": ds["eth"].get("indicators_sentiment"),
-            "eth_minute_data_summary": ds["eth"].get("minute_data_summary"),
-            "eth_minute_data_sentiment": ds["eth"].get("minute_data_sentiment"),
-            "eth_overall_sentiment_score": ds["eth"].get("overall_sentiment_score"),
-        }
+                sentiment_row = {
+                    "run_timestamp": run_timestamp,
+                    "btc_google_trends_summary": ds["btc"].get("google_trends_summary"),
+                    "btc_google_trends_sentiment": ds["btc"].get("google_trends_sentiment"),
+                    "btc_social_media_summary": ds["btc"].get("social_media_summary"),
+                    "btc_social_media_sentiment": ds["btc"].get("social_media_sentiment"),
+                    "btc_news_summary": ds["btc"].get("news_summary"),
+                    "btc_news_sentiment": ds["btc"].get("news_sentiment"),
+                    "btc_indicators_summary": ds["btc"].get("indicators_summary"),
+                    "btc_indicators_sentiment": ds["btc"].get("indicators_sentiment"),
+                    "btc_minute_data_summary": ds["btc"].get("minute_data_summary"),
+                    "btc_minute_data_sentiment": ds["btc"].get("minute_data_sentiment"),
+                    "btc_overall_sentiment_score": ds["btc"].get("overall_sentiment_score"),
+                    "eth_google_trends_summary": ds["eth"].get("google_trends_summary"),
+                    "eth_google_trends_sentiment": ds["eth"].get("google_trends_sentiment"),
+                    "eth_social_media_summary": ds["eth"].get("social_media_summary"),
+                    "eth_social_media_sentiment": ds["eth"].get("social_media_sentiment"),
+                    "eth_news_summary": ds["eth"].get("news_summary"),
+                    "eth_news_sentiment": ds["eth"].get("news_sentiment"),
+                    "eth_indicators_summary": ds["eth"].get("indicators_summary"),
+                    "eth_indicators_sentiment": ds["eth"].get("indicators_sentiment"),
+                    "eth_minute_data_summary": ds["eth"].get("minute_data_summary"),
+                    "eth_minute_data_sentiment": ds["eth"].get("minute_data_sentiment"),
+                    "eth_overall_sentiment_score": ds["eth"].get("overall_sentiment_score"),
+                }
 
-        sentiment_errors = bq_client.insert_rows_json(sentiment_table, [sentiment_row])
-        if sentiment_errors:
-            return {"error": f"BigQuery sentiment insert errors: {sentiment_errors}"}, 500
-        
-        # --- Insert predictions into AI.predictions table ---
-        predictions_table = "cryptomancer-456619.AI.predictions"
-        preds = llm_json["predictions"]
-        run_timestamp = llm_json.get("run_timestamp")
+                sentiment_errors = bq_client.insert_rows_json(sentiment_table, [sentiment_row])
+                if sentiment_errors:
+                    llm_status = "failure"
+                    llm_error = f"BigQuery sentiment insert errors: {sentiment_errors}"
 
-        # Helper to map (token, timeframe) to field names
-        def pred_field(token, hours, field):
-            suffix = f"{hours}_hour" if hours == 1 else f"{hours}_hours"
-            return f"{token.lower()}_{suffix}_{field}"
+                # --- Insert predictions into AI.predictions table ---
+                predictions_table = "cryptomancer-456619.AI.predictions"
+                preds = llm_json["predictions"]
 
-        # Build the row dictionary
-        pred_row = {"run_timestamp": run_timestamp}
-        for token in ["BTC", "ETH"]:
-            for hours in [1, 3, 6, 12, 24]:
-                # Find the prediction for this token and timeframe
-                pred = next((p for p in preds if p["token"] == token and p["timeframe_hours"] == hours), None)
-                if pred:
-                    pred_row[pred_field(token, hours, "direction")] = pred.get("prediction_direction")
-                    pred_row[pred_field(token, hours, "confidence")] = pred.get("prediction_confidence")
-                else:
-                    pred_row[pred_field(token, hours, "direction")] = None
-                    pred_row[pred_field(token, hours, "confidence")] = None
+                def pred_field(token, hours, field):
+                    suffix = f"{hours}_hour" if hours == 1 else f"{hours}_hours"
+                    return f"{token.lower()}_{suffix}_{field}"
 
-        predictions_errors = bq_client.insert_rows_json(predictions_table, [pred_row])
-        if predictions_errors:
-            return {"error": f"BigQuery predictions insert errors: {predictions_errors}"}, 500
+                pred_row = {"run_timestamp": run_timestamp}
+                for token in ["BTC", "ETH"]:
+                    for hours in [1, 3, 6, 12, 24]:
+                        pred = next((p for p in preds if p["token"] == token and p["timeframe_hours"] == hours), None)
+                        if pred:
+                            pred_row[pred_field(token, hours, "direction")] = pred.get("prediction_direction")
+                            pred_row[pred_field(token, hours, "confidence")] = pred.get("prediction_confidence")
+                        else:
+                            pred_row[pred_field(token, hours, "direction")] = None
+                            pred_row[pred_field(token, hours, "confidence")] = None
 
-        # --- Send Discord notification ---
-        send_discord_message(
-            f":white_check_mark: LLM predictions saved to BigQuery for {run_timestamp}"
-        )
+                predictions_errors = bq_client.insert_rows_json(predictions_table, [pred_row])
+                if predictions_errors:
+                    llm_status = "failure"
+                    llm_error = f"BigQuery predictions insert errors: {predictions_errors}"
+
+            except Exception as e:
+                llm_status = "failure"
+                llm_error = f"BigQuery error: {e}"
+
+        # --- Log the run in AI.run_log ---
+        try:
+            run_log_table = "cryptomancer-456619.AI.run_log"
+            log_row = {
+                "run_timestamp": run_timestamp or datetime.utcnow().isoformat(),
+                "llm": llm,
+                "model": model,
+                "status": llm_status,
+                "response": llm_response_text if llm_response_text else (llm_error or "No response")
+            }
+            bq_client.insert_rows_json(run_log_table, [log_row])
+        except Exception as e:
+            print(f"Failed to log run in run_log: {e}")
+
+        # --- Discord notifications ---
+        if llm_status == "success":
+            send_discord_message(
+                f":white_check_mark: LLM predictions saved to BigQuery for {run_timestamp} (LLM: {llm}, Model: {model})"
+            )
+            return {"status": "success"}, 200
+        else:
+            send_discord_message(
+                f":x: LLM prediction job failed (LLM: {llm}, Model: {model}): {llm_error}"
+            )
+            return {"error": llm_error or "Unknown error"}, 500
 
     except Exception as e:
+        # Log to run_log and notify Discord on top-level error
+        try:
+            bq_client = bigquery.Client(project="cryptomancer-456619")
+            run_log_table = "cryptomancer-456619.AI.run_log"
+            log_row = {
+                "run_timestamp": datetime.utcnow().isoformat(),
+                "llm": data.get("llm", "openai") if 'data' in locals() else "openai",
+                "model": data.get("model", "gpt-3.5-turbo") if 'data' in locals() else "gpt-3.5-turbo",
+                "status": "failure",
+                "response": str(e)
+            }
+            bq_client.insert_rows_json(run_log_table, [log_row])
+        except Exception as log_e:
+            print(f"Failed to log run in run_log (outer except): {log_e}")
+        send_discord_message(f":x: LLM prediction job failed (outer except): {e}")
         return {"error": str(e)}, 500
-
-    return {"status": "success"}, 200
 
 def send_discord_message(content, webhook_url=None):
     """
