@@ -79,7 +79,7 @@ def fetch_and_save_minute_data_for_hour(token_pairs, hour_timestamp, cache_folde
         cache_folder (str): Folder to save the CSV file.
     """
     import os
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     # Parse the hour timestamp
     hour_dt = pd.to_datetime(hour_timestamp)
@@ -245,8 +245,7 @@ def api_fetch_and_save_minute_data_for_hour(request):
             filename = f"{hour_dt.strftime('%Y-%m-%dT%H')}_minute_coindesk_data.csv"
 
         # For GCP, prefix with data_exports/
-        if cache_location == 'gcp':
-            filename = f"data_exports/{filename}"
+        filename = f"data_exports/{filename}"
 
         # Use cache_utils.write_csv to save
         write_csv(merged_df, filename, cache_location)
@@ -500,17 +499,24 @@ def run_llm_and_save_to_bigquery(request):
         else:
             return {"error": f"Unsupported llm: {llm}"}, 400
 
-        # --- Read the primer and llm_content.json from GCS ---
-        storage_client = storage.Client()
-        bucket = storage_client.bucket("cryptomancer")
-        primer_blob = bucket.blob("primers/llm_data_collection_and_prediction_primer.md")
-        primer_text = primer_blob.download_as_text()
-        llm_content_blob = bucket.blob("primers/llm_content.json")
-        llm_content_example = llm_content_blob.download_as_text()
-
-        # --- Read the CSV file from GCS ---
-        csv_blob = bucket.blob(f"prediction_cache/{csv_filename}")
-        csv_text = csv_blob.download_as_text()
+        # --- Read the primer and llm_content.json from GCS or local cache ---
+        RUNNING_LOCALLY = not os.environ.get('K_SERVICE', '')
+        if RUNNING_LOCALLY:
+            with open("primers/llm_data_collection_and_prediction_primer.md", "r", encoding="utf-8") as f:
+                primer_text = f.read()
+            with open("primers/llm_content.json", "r", encoding="utf-8") as f:
+                llm_content_example = f.read()
+            with open(f"cache/prediction_cache/data_exports/{csv_filename}", "r", encoding="utf-8") as f:
+                csv_text = f.read()
+        else:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket("cryptomancer")
+            primer_blob = bucket.blob("primers/llm_data_collection_and_prediction_primer.md")
+            primer_text = primer_blob.download_as_text()
+            llm_content_blob = bucket.blob("primers/llm_content.json")
+            llm_content_example = llm_content_blob.download_as_text()
+            csv_blob = bucket.blob(f"prediction_cache/data_exports/{csv_filename}")
+            csv_text = csv_blob.download_as_text()
 
         # --- Compose the prompt for LLM ---
         prompt = (
