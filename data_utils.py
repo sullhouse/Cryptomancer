@@ -584,7 +584,10 @@ def run_llm_and_save_to_bigquery(request):
 
         # --- Save to BigQuery ---
         bq_client = bigquery.Client(project="cryptomancer-456619")
-        run_timestamp = None
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        now_hour = now.replace(minute=0, second=0, microsecond=0)
+        run_timestamp = now_hour.strftime("%Y-%m-%dT%H:%M:%SZ")
         sentiment_errors = None
         predictions_errors = None
 
@@ -592,7 +595,6 @@ def run_llm_and_save_to_bigquery(request):
             try:
                 sentiment_table = "cryptomancer-456619.AI.sentiment"
                 ds = llm_json["data_summary"]
-                run_timestamp = llm_json.get("run_timestamp")
 
                 sentiment_row = {
                     "run_timestamp": run_timestamp,
