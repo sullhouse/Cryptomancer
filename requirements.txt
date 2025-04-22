@@ -30,3 +30,6 @@ requests
 
 # OpenAI
 openai
+
+# Gemini (Google Generative AI)
+google-generativeai
