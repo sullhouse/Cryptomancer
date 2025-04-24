@@ -64,6 +64,8 @@ def hello_http(request):
     functions = {
         "coindesk_batch_update_exchange_rates": "coindesk_rates.batch_update_bigquery_tables",
         "coindesk_backfill_update_exchange_rates": "coindesk_rates.batch_backfill_bigquery_tables",
+        "coindesk_batch_update_code_repository": "coindesk_rates.batch_update_code_repository_tables",  # New mapping
+        "coindesk_backfill_code_repository": "coindesk_rates.batch_backfill_code_repository_tables",  # New mapping
         "model_run_refresh_data": "model_run.refresh_data",
         "model_run_update_features": "model_run.update_features",
         "model_run_training": "model_run.run_training",

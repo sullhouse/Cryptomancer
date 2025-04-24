@@ -34,3 +34,5 @@ local_settings.py
 *.tar.lzma
 *.tar.zst
 *.rar
+trained_models
+*.csv
